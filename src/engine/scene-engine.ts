@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { CargoItem, LoadArea } from '../types'
+import { packItems, snapTo } from './packing'
+import { loadCargoMesh } from './models'
 
 export type SceneEngine = {
   scene: THREE.Scene
@@ -51,21 +53,19 @@ export function createSceneEngine(root: HTMLElement): SceneEngine {
   const rootGroup = new THREE.Group()
   const loadsGroup = new THREE.Group()
   const itemsGroup = new THREE.Group()
-  rootGroup.add(loadsGroup, itemsGroup)
+  const excludedGroup = new THREE.Group()
+  rootGroup.add(loadsGroup, itemsGroup, excludedGroup)
   scene.add(rootGroup)
+
+  const matExcluded = new THREE.MeshLambertMaterial({ color: 0xff6f6a, transparent:true, opacity:.7 })
 
   // State
   let currentLoad: LoadArea | undefined
   let currentItems: CargoItem[] = []
   let frame = 0
+  let activeMesh: THREE.Object3D | null = null
 
-  function resize(){
-    const w = root.clientWidth
-    const h = root.clientHeight || 600
-    camera.aspect = w/h
-    camera.updateProjectionMatrix()
-    renderer.setSize(w, h)
-  }
+  function resize(){ const w=root.clientWidth, h=root.clientHeight||600; camera.aspect=w/h; camera.updateProjectionMatrix(); renderer.setSize(w,h) }
   window.addEventListener('resize', resize)
 
   function setLoad(load?: LoadArea){
@@ -79,87 +79,72 @@ export function createSceneEngine(root: HTMLElement): SceneEngine {
     loadsGroup.add(mesh)
   }
 
-  function setItems(items: CargoItem[]){
-    currentItems = items.slice()
+  async function rebuild(){
     while(itemsGroup.children.length) itemsGroup.remove(itemsGroup.children[0])
-    // Простое размещение по рядам (временное, до переноса полноценной логики)
+    while(excludedGroup.children.length) excludedGroup.remove(excludedGroup.children[0])
     if(!currentLoad) return
-    const L=currentLoad.ln, W=currentLoad.wd, H=currentLoad.hg
-    let x=0, z=0, row=0
-    for(const it of currentItems){
-      const count=Math.max(1, it.cn||1)
-      for(let c=0;c<count;c++){
-        const l=it.ln, w=it.wd, h=it.hg
-        if(z + w > W){ z=0; x+=row; row=0 }
-        const excluded = (x + l > L) || (h>H)
-        const geo = new THREE.BoxGeometry(l,h,w)
-        const mat = new THREE.MeshLambertMaterial({ color: excluded? 0xff6f6a: (it.color? parseInt(it.color.replace('#','0x')): 0x6aaaff), transparent:true, opacity: excluded? .7: .9 })
-        const box = new THREE.Mesh(geo, mat)
-        box.userData.__item = it
-        box.position.set(x + l/2, h/2, z + w/2)
-        itemsGroup.add(box)
-        if(!excluded){ z += w; row = Math.max(row, l) }
-      }
+    const { placements, excluded } = packItems(currentItems, currentLoad, { snap: .05, allowHang: .15 })
+    // draw placed with FBX where applicable
+    for(const p of placements){
+      const it = currentItems.find(i=> i.id===p.id)!
+      const kind: any = it.pg===1? 'pallet': (it.pg===2? 'pallet_box': 'box')
+      const mesh = await loadCargoMesh(kind, { ln:p.size.ln, wd:p.size.wd, hg:p.size.hg })
+      mesh.userData.__item = it
+      mesh.position.copy(p.pos)
+      mesh.rotation.set(p.rot[0], p.rot[1], p.rot[2])
+      itemsGroup.add(mesh)
+    }
+    // draw excluded
+    for(const p of excluded){
+      const it = currentItems.find(i=> i.id===p.id)!
+      const geo = new THREE.BoxGeometry(p.size.ln, p.size.hg, p.size.wd)
+      const box = new THREE.Mesh(geo, matExcluded.clone())
+      box.userData.__item = it
+      const px = p.pos?.x ?? snapTo(p.size.ln/2)
+      const pz = p.pos?.z ?? snapTo(p.size.wd/2)
+      const py = p.pos?.y ?? snapTo(p.size.hg/2)
+      box.position.set(px, py, pz)
+      excludedGroup.add(box)
     }
   }
 
-  function render(){
-    frame = requestAnimationFrame(render)
-    controls.update()
-    renderer.render(scene, camera)
-  }
+  function setItems(items: CargoItem[]){ currentItems = items.slice(); rebuild() }
+  function render(){ frame = requestAnimationFrame(render); controls.update(); renderer.render(scene, camera) }
+  function dispose(){ cancelAnimationFrame(frame); window.removeEventListener('resize', resize); controls.dispose(); renderer.dispose(); scene.clear() }
+  function screenshot(): Promise<Blob|null>{ return new Promise(resolve=> renderer.domElement.toBlob(b=> resolve(b))) }
 
-  function dispose(){
-    cancelAnimationFrame(frame)
-    window.removeEventListener('resize', resize)
-    controls.dispose()
-    renderer.dispose()
-    scene.clear()
-  }
+  // Input (drag/rotate)
+  const raycaster = new THREE.Raycaster(); const mouse = new THREE.Vector2()
+  let dragging=false; let dragTarget: THREE.Object3D | null = null
 
-  function screenshot(): Promise<Blob|null>{
-    return new Promise(resolve=> renderer.domElement.toBlob(b=> resolve(b)))
-  }
-
-  // Простые обработчики ввода (перенос полноценной логики в следующих коммитах)
-  const raycaster = new THREE.Raycaster()
-  const mouse = new THREE.Vector2()
-  let dragging=false
-  let dragTarget: THREE.Mesh | null = null
-
-  function setRay(e:MouseEvent){
-    const rect = renderer.domElement.getBoundingClientRect()
-    mouse.x = ((e.clientX-rect.left)/rect.width)*2 - 1
-    mouse.y = -((e.clientY-rect.top)/rect.height)*2 + 1
-    raycaster.setFromCamera(mouse, camera)
-  }
+  function setRay(e:MouseEvent){ const r = renderer.domElement.getBoundingClientRect(); mouse.x=((e.clientX-r.left)/r.width)*2-1; mouse.y= -((e.clientY-r.top)/r.height)*2+1; raycaster.setFromCamera(mouse, camera) }
 
   function onMouseDown(e:MouseEvent){
     if(e.button!==0) return
     setRay(e)
-    const hit = raycaster.intersectObjects(itemsGroup.children,true).find(h=> (h.object as any).userData?.__item)
-    if(hit){ dragging=true; dragTarget = hit.object as THREE.Mesh }
+    const candidates = [...itemsGroup.children]
+    const hit = raycaster.intersectObjects(candidates,true)[0]
+    if(hit){ dragging=true; dragTarget = hit.object; activeMesh = hit.object }
   }
   function onMouseUp(){ dragging=false; dragTarget=null }
   function onMouseMove(e:MouseEvent){
-    if(!dragging || !dragTarget || !currentLoad) return
+    if(!dragging||!dragTarget||!currentLoad) return
     setRay(e)
-    const y = (dragTarget.geometry as THREE.BoxGeometry).parameters.height/2
+    const bbox = new THREE.Box3().setFromObject(dragTarget)
+    const size = new THREE.Vector3(); bbox.getSize(size)
+    const y = size.y/2
     const plane = new THREE.Plane(new THREE.Vector3(0,1,0), -y)
     const p = new THREE.Vector3(); raycaster.ray.intersectPlane(plane,p)
-    const step=0.05; p.x=Math.round(p.x/step)*step; p.z=Math.round(p.z/step)*step
+    const step=.05; p.x=snapTo(p.x,step); p.z=snapTo(p.z,step)
     const L=currentLoad.ln, W=currentLoad.wd
-    const l=(dragTarget.geometry as THREE.BoxGeometry).parameters.width
-    const w=(dragTarget.geometry as THREE.BoxGeometry).parameters.depth
-    p.x = THREE.MathUtils.clamp(p.x, l/2, L-l/2)
-    p.z = THREE.MathUtils.clamp(p.z, w/2, W-w/2)
+    p.x=THREE.MathUtils.clamp(p.x,size.x/2,L-size.x/2); p.z=THREE.MathUtils.clamp(p.z,size.z/2,W-size.z/2)
     dragTarget.position.x=p.x; dragTarget.position.z=p.z
   }
-  function onKey(e:KeyboardEvent){ /* переносим позже полноценные hotkeys */ }
-
-  return {
-    scene, camera, renderer, controls, root,
-    input:{ onMouseDown, onMouseUp, onMouseMove, onKey },
-    setLoad, setItems, render, dispose, screenshot
+  function onKey(e:KeyboardEvent){
+    if(!activeMesh) return
+    if(e.key==='ArrowLeft' || e.key==='ArrowRight'){ const s = (e.key==='ArrowLeft'? -1:1); activeMesh.rotation.y += s*Math.PI/2 }
+    if(e.key==='ArrowUp' || e.key==='ArrowDown'){ const s = (e.key==='ArrowUp'? -1:1); activeMesh.rotation.x += s*Math.PI/2 }
   }
+
+  return { scene, camera, renderer, controls, root, input:{ onMouseDown,onMouseUp,onMouseMove,onKey }, setLoad, setItems, render, dispose, screenshot }
 }
