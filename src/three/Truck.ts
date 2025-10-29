@@ -3,7 +3,7 @@ import { loadFBX } from './FBX'
 
 export type TruckOptions = { scale?: number, animateWheels?: boolean }
 
-// Heuristic placement that aligns cabin and wheelset with cargo body
+// Deterministic placement: cabin exactly at X=0..cabinLen, body strictly [0..L]x[0..W] at Y=0
 export async function buildTruck(root: THREE.Group, dims: { ln:number, wd:number, hg:number }, opts: TruckOptions = {}){
   const scale = opts.scale ?? 0.01
   const truck = new THREE.Group(); truck.name='truck'
@@ -15,41 +15,36 @@ export async function buildTruck(root: THREE.Group, dims: { ln:number, wd:number
     loadFBX('/models/panel_c.fbx', scale)
   ])
 
-  ;[head,wheels,panel,panelC].forEach(o=>{ o.position.set(0,0,0); o.rotation.set(0,0,0); o.updateMatrixWorld() })
+  // Reset transforms
+  ;[head,wheels,panel,panelC].forEach(o=>{ o.position.set(0,0,0); o.rotation.set(0,0,0); o.scale.multiplyScalar(1); o.updateMatrixWorld(true) })
 
   const L=dims.ln, W=dims.wd, H=dims.hg
 
-  // Cargo body in +X/+Z
+  // Body aligned to +X/+Z on ground
   const body = new THREE.Group(); body.name='cargo-body'
-  const floor = panel.clone(); floor.scale.set(L, 0.02, W); floor.position.set(L/2, 0.0, W/2)
+  const floor = panel.clone(); floor.scale.set(L, 0.02, W); floor.position.set(L/2, 0.01, W/2)
   const left = panelC.clone(); left.scale.set(L, H, 0.02); left.position.set(L/2, H/2, 0)
   const right = panelC.clone(); right.scale.set(L, H, 0.02); right.position.set(L/2, H/2, W)
   const back = panelC.clone(); back.scale.set(0.02, H, W); back.position.set(L, H/2, W/2)
   body.add(floor,left,right,back)
 
-  // Compute cabin bbox in its local space
-  const cabinBBox = new THREE.Box3().setFromObject(head)
-  const cabinSize = new THREE.Vector3(); cabinBBox.getSize(cabinSize)
-
-  // Some models are oriented Z-forward; align so X-forward
-  if (cabinSize.z > cabinSize.x) {
-    head.rotation.y = -Math.PI/2
-    head.updateMatrixWorld(true)
+  // Compute cabin bbox and re-orient so X is forward
+  const orientCabinXForward = () => {
+    const bb = new THREE.Box3().setFromObject(head); const s = new THREE.Vector3(); bb.getSize(s)
+    if (s.z > s.x) { head.rotation.y = -Math.PI/2; head.updateMatrixWorld(true) }
   }
+  orientCabinXForward()
+  // Recompute size after rotate
+  const bb2 = new THREE.Box3().setFromObject(head); const cs = new THREE.Vector3(); bb2.getSize(cs)
 
-  // Re-calc after rotation
-  const cabinBBox2 = new THREE.Box3().setFromObject(head)
-  const cs = new THREE.Vector3(); cabinBBox2.getSize(cs)
+  // Place cabin strictly before body: [ -cs.x .. 0 ] along X, centered by Z
+  head.position.set(-cs.x * 0.98, 0, W*0.5 - cs.z*0.5)
 
-  // Place cabin just before body at X = -cs.x, centered by Z
-  head.position.set(-cs.x*0.55, 0, W*0.5 - cs.z*0.5)
+  // Wheels: under body centerline; shift to rear third
+  const wb = new THREE.Box3().setFromObject(wheels); const ws = new THREE.Vector3(); wb.getSize(ws)
+  wheels.position.set(L*0.7, 0, W*0.5)
 
-  // Wheels alignment: under body centerline, a bit inset from rear
-  const wheelsBBox = new THREE.Box3().setFromObject(wheels)
-  const ws = new THREE.Vector3(); wheelsBBox.getSize(ws)
-  wheels.position.set(L*0.65, 0, W*0.5)
-
-  // Final grouping
+  // Final group
   truck.add(body, head, wheels)
   root.add(truck)
 }
