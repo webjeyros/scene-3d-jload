@@ -1,0 +1,129 @@
+<template>
+  <div class="app">
+    <header class="toolbar">
+      <h1>Scene 3D JetLoader</h1>
+      <div class="actions">
+        <button @click="resetScene">Сброс</button>
+        <button @click="exportScreenshot">Скриншот</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="scene-panel">
+        <ThreeScene
+          ref="sceneRef"
+          :cargo-items="cargoItems"
+          :loads="loads"
+          :settings="settings"
+          @updated="onSceneUpdated"
+        />
+      </section>
+
+      <aside class="side-panel">
+        <div class="card">
+          <h3>Итого</h3>
+          <ul>
+            <li>Мест: {{ summary.count }}</li>
+            <li>Масса: {{ summary.weight }} кг</li>
+            <li>Объем: {{ summary.volume }} м³</li>
+            <li>Свободно: {{ summary.freeVolume }} м³</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h3>Настройки сцены</h3>
+          <label>
+            <input type="checkbox" v-model="settings.snap"/>
+            Примагничивание
+          </label>
+          <label>
+            <input type="checkbox" v-model="settings.hang"/>
+            Свешивание
+          </label>
+        </div>
+      </aside>
+    </main>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, reactive } from 'vue'
+import ThreeScene from './components/ThreeScene.vue'
+import type { CargoItem, LoadArea, SceneSettings, SceneSummary } from './types'
+
+const sceneRef = ref<InstanceType<typeof ThreeScene> | null>(null)
+
+const cargoItems = ref<CargoItem[]>([
+  { id: 1, nm: 'Новое место 1', ln: 0.7, wd: 0.5, hg: 0.5, wg: 100, cn: 3, color: '#938fe0' },
+  { id: 2, nm: 'Новое место 2', ln: 1.0, wd: 1.0, hg: 1.0, wg: 10,  cn: 1, color: '#b4eecb' }
+])
+
+const loads = ref<LoadArea[]>([
+  { id: 1, nm: 'Газель 3м', ln: 3.09, wd: 2.078, hg: 1.9, wg: 1570 }
+])
+
+const settings = reactive<SceneSettings>({
+  snap: true,
+  hang: true
+})
+
+const summary = ref<SceneSummary>({
+  count: 0,
+  weight: 0,
+  volume: 0,
+  freeVolume: 0
+})
+
+function resetScene() {
+  sceneRef.value?.reset()
+}
+
+async function exportScreenshot() {
+  const blob = await sceneRef.value?.toBlob()
+  if (blob) {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = 'scene.png'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+}
+
+function onSceneUpdated(s: SceneSummary) {
+  summary.value = s
+}
+</script>
+
+<style scoped>
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #1976d2;
+  color: #fff;
+}
+.actions button { margin-left: 8px; }
+.content {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 16px;
+  padding: 16px;
+  flex: 1;
+}
+.card {
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.1);
+  margin-bottom: 12px;
+}
+.scene-panel { background: #f7f9fc; border-radius: 8px; overflow: hidden; }
+.side-panel { max-height: calc(100vh - 100px); overflow: auto; }
+</style>
