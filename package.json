@@ -1,0 +1,21 @@
+{
+  "name": "scene-3d-jload",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Мини-приложение Vue.js: 3D сцена JetLoader (декомпозиция chunk-e8267cc8)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.153.0",
+    "vue": "^3.4.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.0",
+    "vite": "^5.0.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-vue": "^9.26.0"
+  }
+}
