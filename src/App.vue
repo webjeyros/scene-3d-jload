@@ -34,7 +34,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, onMounted } from 'vue'
 import SceneView from './components/SceneView.vue'
 import type { CargoItem, LoadArea } from './types'
 import { importJload, exportJload } from './io/JloadCodec'
@@ -52,7 +52,13 @@ const loads = ref<LoadArea[]>([
 
 const settings = reactive({ snap: .05, allowHang: .05, supportRatioMin: .6, units: { size:'m', weight:'kg' } })
 
-watch(settings, (nv)=>{ sceneRef.value?.reset(); }, { deep:true })
+onMounted(()=>{
+  // гарантируем инициализацию вида и настроек
+  sceneRef.value?.focus()
+})
+
+// При изменении настроек — прокидываем в движок
+watch(settings, (nv)=>{ (sceneRef.value as any)?.$?.setupState?.engine?.setSettings?.(nv) }, { deep:true })
 
 function resetScene() { sceneRef.value?.reset() }
 
@@ -67,7 +73,7 @@ async function exportScreenshot() {
   }
 }
 
-function onHotkey(k:string){ if(k==='recalc'){ /* можно вызвать свои процедуры */ } }
+function onHotkey(k:string){ if(k==='recalc'){ (sceneRef.value as any)?.$?.setupState?.engine?.setItems?.(cargoItems.value) } }
 
 function onImport(ev: Event){
   const input = ev.target as HTMLInputElement
@@ -80,6 +86,8 @@ function onImport(ev: Event){
       const data = importJload(json)
       loads.value = data.loads
       cargoItems.value = data.cargo
+      ;(sceneRef.value as any)?.$?.setupState?.engine?.setLoad?.(loads.value[0])
+      ;(sceneRef.value as any)?.$?.setupState?.engine?.setItems?.(cargoItems.value)
     } catch (e){ console.error(e) }
   }
   reader.readAsText(file)
