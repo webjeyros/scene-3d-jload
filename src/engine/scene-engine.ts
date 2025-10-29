@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { CargoItem, LoadArea } from '../types'
 import { packItems, snapTo, type PackSettings } from './packing'
 import { loadCargoMesh } from './models'
+import { buildTruck } from './truck'
 
 export type SceneEngine = {
   scene: THREE.Scene
@@ -56,7 +57,8 @@ export function createSceneEngine(root: HTMLElement): SceneEngine {
   const loadsGroup = new THREE.Group()
   const itemsGroup = new THREE.Group()
   const excludedGroup = new THREE.Group()
-  rootGroup.add(loadsGroup, itemsGroup, excludedGroup)
+  const vehicleGroup = new THREE.Group()
+  rootGroup.add(loadsGroup, itemsGroup, excludedGroup, vehicleGroup)
   scene.add(rootGroup)
 
   const matExcluded = new THREE.MeshLambertMaterial({ color: 0xff6f6a, transparent:true, opacity:.7 })
@@ -76,12 +78,15 @@ export function createSceneEngine(root: HTMLElement): SceneEngine {
   function setLoad(load?: LoadArea){
     currentLoad = load
     while(loadsGroup.children.length) loadsGroup.remove(loadsGroup.children[0])
+    while(vehicleGroup.children.length) vehicleGroup.remove(vehicleGroup.children[0])
     if(!load) return
     const geo = new THREE.BoxGeometry(load.ln, load.hg, load.wd)
     const mat = new THREE.MeshLambertMaterial({ color: 0x87c38f, wireframe: true, transparent:true, opacity:.15 })
     const mesh = new THREE.Mesh(geo, mat)
     mesh.position.set(load.ln/2, load.hg/2, load.wd/2)
     loadsGroup.add(mesh)
+    // build vehicle aligned with cargo body
+    buildTruck(vehicleGroup, { ln: load.ln, wd: load.wd, hg: load.hg }, { offsets:{ x: -0.1, y:0, z:0 }, wheelOffset:{ x:0, y:0, z:0 } })
   }
 
   function setSettings(s: Partial<PackSettings>){ settings = { ...settings, ...s } ; rebuild() }
