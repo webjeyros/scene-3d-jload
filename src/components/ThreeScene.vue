@@ -1,5 +1,5 @@
 <template>
-  <div ref="container" class="three-root" @mousedown="onMouseDown" @mouseup="onMouseUp" @mousemove="onMouseMove"></div>
+  <div ref="container" class="three-root" @mousedown="onMouseDown" @mouseup="onMouseUp" @mousemove="onMouseMove" @keydown="onKey" tabindex="0"></div>
 </template>
 
 <script setup lang="ts">
@@ -8,6 +8,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { CargoItem, LoadArea, SceneSettings, SceneSummary } from '../types'
 import { buildTruck } from '../three/Truck'
+import { basicPlace } from '../pack/Rules'
 
 const props = defineProps<{ 
   cargoItems: CargoItem[]
@@ -29,7 +30,6 @@ const raycaster = new THREE.Raycaster()
 const mouse = new THREE.Vector2()
 let dragging = false
 let dragTarget: THREE.Mesh | null = null
-let dragOffset = new THREE.Vector3()
 
 const root = new THREE.Group()
 const cargoGroup = new THREE.Group()
@@ -38,7 +38,7 @@ const loadsGroup = new THREE.Group()
 const matExcluded = new THREE.MeshLambertMaterial({ color: 0xff6f6a, transparent: true, opacity: 0.7 })
 
 onMounted(() => { init(); renderScene() })
-onBeforeUnmount(() => { cancelAnimationFrame(frameId); controls?.dispose(); renderer?.dispose(); scene?.clear() })
+onBeforeUnmount(() => { cancelAnimationFrame(frameId); controls?.dispose(); renderer?.dispose(); scene?.clear(); window.removeEventListener('resize', onResize) })
 
 function init(){
   scene = new THREE.Scene()
@@ -62,9 +62,10 @@ function init(){
   root.add(loadsGroup); root.add(cargoGroup); scene.add(root)
   window.addEventListener('resize', onResize)
   buildLoads()
-  buildTruck(root, { ln: props.loads[0]?.ln||3, wd: props.loads[0]?.wd||2, hg: props.loads[0]?.hg||2 })
-  buildCargo()
+  buildTruck(root, { ln: props.loads[0]?.ln||3, wd: props.loads[0]?.wd||2, hg: props.loads[0]?.hg||2 }, { animateWheels:false })
+  autoPlace()
   updateSummary()
+  container.value?.focus()
 }
 
 function onResize(){
@@ -89,36 +90,32 @@ function buildLoads(){
 
 function color(hex?:string){ return hex? parseInt(hex.replace('#','0x')): 0x6aaaff }
 
-function buildCargo(){
+function autoPlace(){
   while(cargoGroup.children.length) cargoGroup.remove(cargoGroup.children[0])
-  const L = props.loads[0]?.ln||3, W = props.loads[0]?.wd||2, H = props.loads[0]?.hg||2
-  let x=0, z=0, row=0
-  props.cargoItems.forEach(it=>{
-    const c = Math.max(1, it.cn||1)
-    for(let i=0;i<c;i++){
-      const l=it.ln, w=it.wd, h=it.hg
-      if(z + w > W){ z = 0; x += row; row = 0 }
-      const excluded = (x + l > L) || (h > H)
-      const geo = new THREE.BoxGeometry(l, h, w)
-      const mat = excluded ? matExcluded.clone() : new THREE.MeshLambertMaterial({ color: color(it.color) })
-      const box = new THREE.Mesh(geo, mat)
-      box.userData.__item = it
-      box.position.set(x + l/2, h/2, z + w/2)
-      cargoGroup.add(box)
-      if(!excluded){ z += w; row = Math.max(row, l) }
-    }
-  })
-}
-
-function updateSummary(){
   const l = props.loads[0]
-  const totalV = props.cargoItems.reduce((a,it)=> a + (it.ln*it.wd*it.hg)*(it.cn||1), 0)
-  const freeV = Math.max(0, (l?.ln||0)*(l?.wd||0)*(l?.hg||0) - totalV)
-  const weight = props.cargoItems.reduce((a,it)=> a + (it.wg||0)*(it.cn||1), 0)
-  const count = props.cargoItems.reduce((a,it)=> a + (it.cn||1), 0)
-  emit('updated', { count, weight, volume: round3(totalV), freeVolume: round3(freeV) })
+  if(!l) return
+  const { placements, excluded } = basicPlace(props.cargoItems, l, { snap: 0.05 })
+  for (const p of placements){
+    const it = props.cargoItems.find(i=> i.id===p.id)!;
+    const geo = new THREE.BoxGeometry(it.ln, it.hg, it.wd)
+    const mat = new THREE.MeshLambertMaterial({ color: color(it.color) })
+    const box = new THREE.Mesh(geo, mat)
+    box.userData.__item = it
+    box.position.set(p.x, p.y, p.z)
+    box.rotation.set(p.rx, p.ry, p.rz)
+    cargoGroup.add(box)
+  }
+  for (const p of excluded){
+    const it = props.cargoItems.find(i=> i.id===p.id)!;
+    const geo = new THREE.BoxGeometry(it.ln, it.hg, it.wd)
+    const mat = matExcluded.clone()
+    const box = new THREE.Mesh(geo, mat)
+    box.userData.__item = it
+    box.position.set(p.x, it.hg/2, p.z)
+    box.rotation.set(p.rx, p.ry, p.rz)
+    cargoGroup.add(box)
+  }
 }
-function round3(n:number){ return Math.round(n*1000)/1000 }
 
 // Drag operations
 function screenToRay(x:number,y:number){
@@ -135,45 +132,46 @@ function pickCargo(evt: MouseEvent){
   return hit?.object as THREE.Mesh | undefined
 }
 
-function onMouseDown(evt: MouseEvent){
-  if(evt.button!==0) return
-  const obj = pickCargo(evt)
-  if(obj){ dragging = true; dragTarget = obj; dragOffset.set(0,0,0) }
-}
+function onMouseDown(evt: MouseEvent){ if(evt.button!==0) return; const obj = pickCargo(evt); if(obj){ dragging = true; dragTarget = obj } }
 function onMouseUp(){ dragging=false; dragTarget=null }
 function onMouseMove(evt: MouseEvent){
   if(!dragging || !dragTarget) return
-  // project to ground plane y=dragTarget half height
   const y = (dragTarget.geometry as THREE.BoxGeometry).parameters.height/2
   const plane = new THREE.Plane(new THREE.Vector3(0,1,0), -y)
   screenToRay(evt.clientX, evt.clientY)
-  const p = new THREE.Vector3()
-  raycaster.ray.intersectPlane(plane, p)
-  // snap
-  const step = 0.05
-  p.x = Math.round(p.x/step)*step
-  p.z = Math.round(p.z/step)*step
-  // clamp inside load area
+  const p = new THREE.Vector3(); raycaster.ray.intersectPlane(plane, p)
+  const step = 0.05; p.x = Math.round(p.x/step)*step; p.z = Math.round(p.z/step)*step
   const L = props.loads[0]?.ln||3, W = props.loads[0]?.wd||2
-  const l = (dragTarget.geometry as THREE.BoxGeometry).parameters.width // careful orientation
+  const l = (dragTarget.geometry as THREE.BoxGeometry).parameters.width
   const w = (dragTarget.geometry as THREE.BoxGeometry).parameters.depth
   p.x = THREE.MathUtils.clamp(p.x, l/2, L - l/2)
   p.z = THREE.MathUtils.clamp(p.z, w/2, W - w/2)
-  dragTarget.position.x = p.x
-  dragTarget.position.z = p.z
+  dragTarget.position.x = p.x; dragTarget.position.z = p.z
+}
+
+function onKey(evt: KeyboardEvent){
+  if(!dragTarget) return
+  const rotStep = Math.PI/2
+  if(evt.key==='ArrowLeft' || evt.key==='ArrowRight'){
+    dragTarget.rotation.y += (evt.key==='ArrowLeft'? -rotStep: rotStep)
+  }
+  if(evt.key==='ArrowUp' || evt.key==='ArrowDown'){
+    // вертикальная смена — упрощённо вращаем вокруг X, учитывайте ov в Rules при авторазмещении
+    dragTarget.rotation.x += (evt.key==='ArrowUp'? -rotStep: rotStep)
+  }
 }
 
 // Expose
 function reset(){ controls.reset() }
 async function toBlob(): Promise<Blob | null> { return new Promise((resolve)=> renderer.domElement.toBlob((b)=> resolve(b))) }
 
-watch(()=> props.loads, ()=>{ buildLoads(); buildCargo(); updateSummary() }, { deep:true })
-watch(()=> props.cargoItems, ()=>{ buildCargo(); updateSummary() }, { deep:true })
+watch(()=> props.loads, ()=>{ buildLoads(); autoPlace(); updateSummary() }, { deep:true })
+watch(()=> props.cargoItems, ()=>{ autoPlace(); updateSummary() }, { deep:true })
 
 defineExpose({ reset, toBlob })
 </script>
 
 <style scoped>
-.three-root { width: 100%; height: calc(100vh - 110px); }
+.three-root { width: 100%; height: calc(100vh - 110px); outline: none; }
 canvas { display:block; width:100%; height:100%; cursor: default; }
 </style>
