@@ -2,9 +2,20 @@ import type { CargoItem, LoadArea } from '../types'
 import * as THREE from 'three'
 
 export type Orientation = [number,number,number]
-export type Placement = { id:number, pos:THREE.Vector3, rot:Orientation, size:{ln:number,wd:number,hg:number}, excluded?:{reason:string} }
+export type Placement = { id:number, pos:THREE.Vector3, rot:Orientation, size:{ln:number,wd:number,hg:number}, layer:number, excluded?:{reason:string} }
 
-// Allowed orientations depending on ov (overturn allowed)
+export type PackSettings = {
+  snap?: number
+  allowHang?: number
+  supportRatioMin?: number
+  units?: { size: 'mm'|'cm'|'m', weight: 'kg'|'t' }
+}
+
+const U = {
+  toMeters(v:number, u:'mm'|'cm'|'m'){ return u==='mm'? v/1000 : u==='cm'? v/100 : v },
+  toKg(v:number, u:'kg'|'t'){ return u==='t'? v*1000 : v }
+}
+
 export function getOrientations(item: CargoItem): Orientation[] {
   const ov = item.ov ?? 0
   const base: Orientation[] = [ [0,0,0], [0,Math.PI/2,0] ]
@@ -21,101 +32,75 @@ export function orientedSize(item: CargoItem, rot: Orientation){
   return { ln, wd, hg }
 }
 
-// Stacking rules
-export function canPlaceOnTop(top: CargoItem, bottom: CargoItem){
-  const stTop = top.st ?? 0
-  const stBottom = bottom.st ?? 3
-  if(stTop===0) return false
-  if(stBottom===2) return false // bottom accepts only above others
-  const lmTop = top.lm ?? 0
-  if(stTop===1 && lmTop>0 && (top.wg??0)>lmTop) return false
-  return true
-}
-
-// Overhang and stability (simple model)
-export function isStable(top: Placement, bottom: Placement, allowHang=0.15){
-  const halfTop = new THREE.Vector2(top.size.ln/2, top.size.wd/2)
-  const halfBottom = new THREE.Vector2(bottom.size.ln/2, bottom.size.wd/2)
-  const dx = Math.abs(top.pos.x - bottom.pos.x)
-  const dz = Math.abs(top.pos.z - bottom.pos.z)
-  const overlapX = Math.max(0, halfBottom.x + halfTop.x - dx)
-  const overlapZ = Math.max(0, halfBottom.y + halfTop.y - dz)
-  const areaOverlap = overlapX*overlapZ
-  const areaTop = top.size.ln*top.size.wd
-  const ratio = areaOverlap/areaTop
-  return ratio >= (1-allowHang)
-}
-
-// Snap helpers
 export function snapTo(value:number, step=0.05){ return Math.round(value/step)*step }
 
-export function packItems(items: CargoItem[], area: LoadArea, opts:{snap?:number, allowHang?:number}={}){
+function edgeSnap(x:number, edges:number[], tol:number){
+  for(const e of edges){ if(Math.abs(x-e)<=tol) return e } return x
+}
+
+export function packItems(items: CargoItem[], area: LoadArea, opts:PackSettings={}){
+  const snap = opts.snap ?? 0.05
+  const allowHang = opts.allowHang ?? 0.05
+  const supportMin = opts.supportRatioMin ?? 0.6
+
   const placements: Placement[]=[]
   const excluded: Placement[]=[]
-  const step = opts.snap ?? 0.05
-  const allowHang = opts.allowHang ?? 0.15
+  const layers: Placement[][]=[[]]
+  const layerHeights:number[]=[0]
 
-  let layers: Placement[][] = [[]]
-  let layerHeights: number[] = [0]
+  let x=0, z=0, row=0
 
-  let cursorX=0, cursorZ=0, rowDepth=0
+  // Precompute edge lists for snapping (0 and dimension, and accumulated row/col edges)
+  let edgesX:number[]=[0], edgesZ:number[]=[0]
 
   for(const it of items){
     const count=Math.max(1, it.cn||1)
     for(let c=0;c<count;c++){
-      // choose best orientation that fits width/height
       const orientations = getOrientations(it)
-      let chosen:Orientation = orientations[0]
-      let size = orientedSize(it, chosen)
-      // if row overflow, new row
-      if(cursorZ + size.wd > area.wd){ cursorZ=0; cursorX += rowDepth; rowDepth=0 }
-      // try rotate to fit width
-      if(cursorZ + size.wd > area.wd && orientations[1]){
-        const alt=orientedSize(it, orientations[1])
-        if(cursorZ + alt.wd <= area.wd){ chosen=orientations[1]; size=alt }
-      }
-      // height constraint
-      const currentLayerIndex = layers.length-1
-      const baseY = layerHeights.reduce((a,b)=>a+b,0)
-      if(baseY + size.hg > area.hg){
-        excluded.push({ id:it.id, pos:new THREE.Vector3(), rot:chosen, size, excluded:{reason:'height'} })
-        continue
-      }
-      // length constraint (allow hang)
-      if(cursorX + size.ln > area.ln*(1+allowHang)){
-        excluded.push({ id:it.id, pos:new THREE.Vector3(), rot:chosen, size, excluded:{reason:'length'} })
-        continue
-      }
-      // compute position
-      const px = snapTo(cursorX + size.ln/2, step)
-      const pz = snapTo(cursorZ + size.wd/2, step)
-      const py = snapTo(baseY + size.hg/2, step)
-      const placement: Placement = { id:it.id, pos:new THREE.Vector3(px,py,pz), rot:chosen, size }
+      let rot = orientations[0]
+      let size = orientedSize(it, rot)
 
-      // stability: if not first layer, check against any below cell
-      if(currentLayerIndex>0){
-        const below = layers[currentLayerIndex-1]
-        const stableSome = below.some(b=> isStable(placement, b, allowHang))
-        if(!stableSome){
-          excluded.push({ ...placement, excluded:{reason:'stability'} })
-          continue
-        }
+      if(z + size.wd > area.wd){ z=0; x+=row; row=0 }
+      if(z + size.wd > area.wd && orientations[1]){ const alt=orientedSize(it,orientations[1]); if(z+alt.wd<=area.wd){ rot=orientations[1]; size=alt } }
+
+      const hUsed = layerHeights.reduce((a,b)=>a+b,0)
+      if(hUsed + size.hg > area.hg){ excluded.push({ id:it.id, pos:new THREE.Vector3(), rot, size, layer:layers.length-1, excluded:{reason:'height'} }); continue }
+      if(x + size.ln > area.ln*(1+allowHang)){ excluded.push({ id:it.id, pos:new THREE.Vector3(), rot, size, layer:layers.length-1, excluded:{reason:'length'} }); continue }
+
+      // Snap to edges (edge-to-edge)
+      const pxRaw = x + size.ln/2
+      const pzRaw = z + size.wd/2
+      const px = snapTo(edgeSnap(pxRaw, edgesX.map(e=> e + size.ln/2), snap), snap)
+      const pz = snapTo(edgeSnap(pzRaw, edgesZ.map(e=> e + size.wd/2), snap), snap)
+      const py = snapTo(hUsed + size.hg/2, snap)
+
+      const placement: Placement={ id:it.id, pos:new THREE.Vector3(px,py,pz), rot, size, layer: layers.length-1 }
+
+      // Stability check with support ratio
+      if(placement.layer>0){
+        const below = layers[placement.layer-1]
+        // compute overlapped area sum
+        const supported = below.reduce((acc,b)=>{
+          const dx = Math.abs(placement.pos.x - b.pos.x)
+          const dz = Math.abs(placement.pos.z - b.pos.z)
+          const ox = Math.max(0, (b.size.ln/2 + placement.size.ln/2) - dx)
+          const oz = Math.max(0, (b.size.wd/2 + placement.size.wd/2) - dz)
+          return acc + (ox*oz)
+        }, 0)
+        const areaTop = placement.size.ln*placement.size.wd
+        if(supported/areaTop < supportMin){ excluded.push({ ...placement, excluded:{reason:'stability'} }); continue }
       }
 
       placements.push(placement)
-      layers[currentLayerIndex].push(placement)
-      // update row
-      cursorZ += size.wd
-      rowDepth = Math.max(rowDepth, size.ln)
+      layers[layers.length-1].push(placement)
 
-      // stacking: if item supports stacking and there is vertical space, optionally start next layer
-      if((it.st??0)>0 && (it.lm??0)>=0){
-        if(cursorX + rowDepth >= area.ln*0.95){
-          // start new layer when line filled
-          layers.push([])
-          layerHeights.push(size.hg)
-          cursorX=0; cursorZ=0; rowDepth=0
-        }
+      // advance row & edges
+      z += size.wd
+      row = Math.max(row, size.ln)
+      edgesZ.push(z)
+      // When row filled, add a new layer trigger on next overflow
+      if(x + row >= area.ln*0.999){
+        layers.push([]); layerHeights.push(size.hg); x=0; z=0; row=0; edgesX=[0]; edgesZ=[0]
       }
     }
   }
