@@ -3,6 +3,8 @@
     <header class="toolbar">
       <h1>Scene 3D JetLoader</h1>
       <div class="actions">
+        <input type="file" accept="application/json" @change="onImport" />
+        <button @click="onExport">Экспорт JSON</button>
         <button @click="resetScene">Сброс</button>
         <button @click="exportScreenshot">Скриншот</button>
       </div>
@@ -50,6 +52,7 @@
 import { ref, reactive } from 'vue'
 import ThreeScene from './components/ThreeScene.vue'
 import type { CargoItem, LoadArea, SceneSettings, SceneSummary } from './types'
+import { importJload, exportJload } from './io/JloadCodec'
 
 const sceneRef = ref<InstanceType<typeof ThreeScene> | null>(null)
 
@@ -92,38 +95,40 @@ async function exportScreenshot() {
 function onSceneUpdated(s: SceneSummary) {
   summary.value = s
 }
+
+function onImport(ev: Event){
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if(!file) return
+  const reader = new FileReader()
+  reader.onload = ()=>{
+    try {
+      const json = JSON.parse(String(reader.result))
+      const data = importJload(json)
+      loads.value = data.loads
+      cargoItems.value = data.cargo
+    } catch (e){ console.error(e) }
+  }
+  reader.readAsText(file)
+}
+
+function onExport(){
+  const json = exportJload(loads.value, cargoItems.value)
+  const blob = new Blob([JSON.stringify(json,null,2)], { type:'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'jload-scene.json'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
 </script>
 
 <style scoped>
-.app {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
-}
-.toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  background: #1976d2;
-  color: #fff;
-}
+.app { display:flex; flex-direction:column; min-height:100vh; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif; }
+.toolbar { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; background:#1976d2; color:#fff; }
 .actions button { margin-left: 8px; }
-.content {
-  display: grid;
-  grid-template-columns: 1fr 360px;
-  gap: 16px;
-  padding: 16px;
-  flex: 1;
-}
-.card {
-  background: #fff;
-  border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 1px 3px rgba(0,0,0,.1);
-  margin-bottom: 12px;
-}
-.scene-panel { background: #f7f9fc; border-radius: 8px; overflow: hidden; }
-.side-panel { max-height: calc(100vh - 100px); overflow: auto; }
+.content { display:grid; grid-template-columns: 1fr 360px; gap:16px; padding:16px; flex:1; }
+.card { background:#fff; border-radius:8px; padding:12px; box-shadow:0 1px 3px rgba(0,0,0,.1); margin-bottom:12px; }
+.scene-panel { background:#f7f9fc; border-radius:8px; overflow:hidden; }
+.side-panel { max-height: calc(100vh - 100px); overflow:auto; }
 </style>
