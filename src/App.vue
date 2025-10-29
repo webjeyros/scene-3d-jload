@@ -12,36 +12,21 @@
 
     <main class="content">
       <section class="scene-panel">
-        <ThreeScene
+        <SceneView
           ref="sceneRef"
           :cargo-items="cargoItems"
           :loads="loads"
           :settings="settings"
-          @updated="onSceneUpdated"
+          @hotkey="onHotkey"
         />
       </section>
 
       <aside class="side-panel">
         <div class="card">
-          <h3>Итого</h3>
-          <ul>
-            <li>Мест: {{ summary.count }}</li>
-            <li>Масса: {{ summary.weight }} кг</li>
-            <li>Объем: {{ summary.volume }} м³</li>
-            <li>Свободно: {{ summary.freeVolume }} м³</li>
-          </ul>
-        </div>
-
-        <div class="card">
           <h3>Настройки сцены</h3>
-          <label>
-            <input type="checkbox" v-model="settings.snap"/>
-            Примагничивание
-          </label>
-          <label>
-            <input type="checkbox" v-model="settings.hang"/>
-            Свешивание
-          </label>
+          <label><input type="number" step="0.005" v-model.number="settings.snap"/> snap (м)</label>
+          <label><input type="number" step="0.01" v-model.number="settings.allowHang"/> свес (доля)</label>
+          <label><input type="number" step="0.01" v-model.number="settings.supportRatioMin"/> устойчивость (доля)</label>
         </div>
       </aside>
     </main>
@@ -49,40 +34,30 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
-import ThreeScene from './components/ThreeScene.vue'
-import type { CargoItem, LoadArea, SceneSettings, SceneSummary } from './types'
+import { ref, reactive, watch } from 'vue'
+import SceneView from './components/SceneView.vue'
+import type { CargoItem, LoadArea } from './types'
 import { importJload, exportJload } from './io/JloadCodec'
 
-const sceneRef = ref<InstanceType<typeof ThreeScene> | null>(null)
+const sceneRef = ref<InstanceType<typeof SceneView> | null>(null)
 
 const cargoItems = ref<CargoItem[]>([
-  { id: 1, nm: 'Новое место 1', ln: 0.7, wd: 0.5, hg: 0.5, wg: 100, cn: 3, color: '#938fe0' },
-  { id: 2, nm: 'Новое место 2', ln: 1.0, wd: 1.0, hg: 1.0, wg: 10,  cn: 1, color: '#b4eecb' }
+  { id: 1, nm: 'Новое место 1', ln: 0.7, wd: 0.5, hg: 0.5, wg: 100, cn: 3, color: '#938fe0', pg: 2 },
+  { id: 2, nm: 'Новое место 2', ln: 1.0, wd: 1.0, hg: 1.0, wg: 10,  cn: 1, color: '#b4eecb', pg: 1 }
 ])
 
 const loads = ref<LoadArea[]>([
   { id: 1, nm: 'Газель 3м', ln: 3.09, wd: 2.078, hg: 1.9, wg: 1570 }
 ])
 
-const settings = reactive<SceneSettings>({
-  snap: true,
-  hang: true
-})
+const settings = reactive({ snap: .05, allowHang: .05, supportRatioMin: .6, units: { size:'m', weight:'kg' } })
 
-const summary = ref<SceneSummary>({
-  count: 0,
-  weight: 0,
-  volume: 0,
-  freeVolume: 0
-})
+watch(settings, (nv)=>{ sceneRef.value?.reset(); }, { deep:true })
 
-function resetScene() {
-  sceneRef.value?.reset()
-}
+function resetScene() { sceneRef.value?.reset() }
 
 async function exportScreenshot() {
-  const blob = await sceneRef.value?.toBlob()
+  const blob = await sceneRef.value?.screenshot()
   if (blob) {
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
@@ -92,9 +67,7 @@ async function exportScreenshot() {
   }
 }
 
-function onSceneUpdated(s: SceneSummary) {
-  summary.value = s
-}
+function onHotkey(k:string){ if(k==='recalc'){ /* можно вызвать свои процедуры */ } }
 
 function onImport(ev: Event){
   const input = ev.target as HTMLInputElement
