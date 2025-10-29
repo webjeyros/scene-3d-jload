@@ -62,8 +62,10 @@ function init(){
   root.add(loadsGroup); root.add(cargoGroup); scene.add(root)
   window.addEventListener('resize', onResize)
   buildLoads()
+  // IMPORTANT: build truck AFTER loads so it can use correct dims
   buildTruck(root, { ln: props.loads[0]?.ln||3, wd: props.loads[0]?.wd||2, hg: props.loads[0]?.hg||2 }, { animateWheels:false })
   autoPlace()
+  // FIX: call updateSummary safely
   updateSummary()
   container.value?.focus()
 }
@@ -97,6 +99,7 @@ function autoPlace(){
   const { placements, excluded } = basicPlace(props.cargoItems, l, { snap: 0.05 })
   for (const p of placements){
     const it = props.cargoItems.find(i=> i.id===p.id)!;
+    const dim = new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(0,0,0), new THREE.Vector3(it.ln, it.hg, it.wd))
     const geo = new THREE.BoxGeometry(it.ln, it.hg, it.wd)
     const mat = new THREE.MeshLambertMaterial({ color: color(it.color) })
     const box = new THREE.Mesh(geo, mat)
@@ -111,11 +114,21 @@ function autoPlace(){
     const mat = matExcluded.clone()
     const box = new THREE.Mesh(geo, mat)
     box.userData.__item = it
-    box.position.set(p.x, it.hg/2, p.z)
-    box.rotation.set(p.rx, p.ry, p.rz)
+    box.position.set(p.x || it.ln/2, it.hg/2, p.z || it.wd/2)
+    box.rotation.set(p.rx||0, p.ry||0, p.rz||0)
     cargoGroup.add(box)
   }
 }
+
+function updateSummary(){
+  const l = props.loads[0]
+  const totalV = props.cargoItems.reduce((a,it)=> a + (it.ln*it.wd*it.hg)*(it.cn||1), 0)
+  const freeV = Math.max(0, (l?.ln||0)*(l?.wd||0)*(l?.hg||0) - totalV)
+  const weight = props.cargoItems.reduce((a,it)=> a + (it.wg||0)*(it.cn||1), 0)
+  const count = props.cargoItems.reduce((a,it)=> a + (it.cn||1), 0)
+  emit('updated', { count, weight, volume: round3(totalV), freeVolume: round3(freeV) })
+}
+function round3(n:number){ return Math.round(n*1000)/1000 }
 
 // Drag operations
 function screenToRay(x:number,y:number){
@@ -156,7 +169,6 @@ function onKey(evt: KeyboardEvent){
     dragTarget.rotation.y += (evt.key==='ArrowLeft'? -rotStep: rotStep)
   }
   if(evt.key==='ArrowUp' || evt.key==='ArrowDown'){
-    // вертикальная смена — упрощённо вращаем вокруг X, учитывайте ov в Rules при авторазмещении
     dragTarget.rotation.x += (evt.key==='ArrowUp'? -rotStep: rotStep)
   }
 }
